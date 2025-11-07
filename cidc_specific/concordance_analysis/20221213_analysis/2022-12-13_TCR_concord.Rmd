@@ -1,0 +1,1542 @@
+---
+title: "2022-12-13_TCR_concord"
+author: "Jennifer Altreuter"
+date: "12/13/2022"
+output: html_document
+---
+
+---
+title: "TCR_Concordance_Analysis"
+author: "altreuter"
+date: "12/13/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Base Code for TCR Concordance Analysis
+Whenever TCRseq is performed by a CIMAC, reference samples distributed by MDAnderson will be sequenced as well.  These reference samples are then compared with reference samples received from other CIMAC TCRseq runs to look for concordance in the results.  The first such concordance analysis was performed in September of 2021.  This Rmd file is a subset of that code which can be used for future concordance analyses.
+
+This code is modified from the from TCR concordance analysis performed 9/17/2021.  Output from the original code produced:
+1) Pairwise correlation plots for the top 50, top 100 and top 500 clones for all possible pairs of files.  Correlation values shown in dotplots, heatmaps and a summary table
+2) Total clones in each file
+3) Productive Frequency Histogram for all reference sample files
+
+# 12/13/2022 Analysis details
+3 new sets of positive controls have been received by the CIDC:
+1. Trial 10057 from DFCI
+2. Trial ABTC-1603 from MDAnderson
+3. Trial NRG-LU004 from Stanford
+
+Past positive controls (used for the 9/17/2021 analysis) were:
+1. Trial E4412 from MDAnderson
+2. non-trial related Reference control from DFCI
+
+Today's analysis will look at the top 50, 100 and 500 clones to compare the following:
+1. Intra-trial concordance for each new trial (10057, NRG-LU004 and ABTC-1603).
+2. Inter-site concordance using one positive control from each trial + the DFCI reference sample from Sept 2021.
+
+# Intra-trial concordance 10057
+## Read in files, create top 50, top 100 and top 500 clones tables.
+This code block:
+ * Sets indir and outdir
+ * Reads all files in the indir
+ * Creates tables with top 50, top 100 and top 500 clones in each file.  (Top clones by productive frequency)
+
+```{r,eval=TRUE}
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+
+#set input directory
+indir<-"/Users/jennifer/Documents/tmp_TCR/data_10057"
+outdir<-"/Users/jennifer/Documents/tmp_TCR/concord_output/10057/"
+
+#create read table function that can accept a variable as a table name
+read_tcr<-function(k){
+  tcr_table<-read.table(k,header=T,sep="\t")
+  tcr_table<-tcr_table %>%
+    select(productive_frequency, cdr3_amino_acid, v_gene, d_gene, j_gene) %>%
+    filter(!is.na(productive_frequency))
+  return(tcr_table)
+}
+
+# get list of filenames from input directory
+ff <- list.files(path=indir, full.names=TRUE)
+
+# apply read_tcr function to list of files, add file names to each list member
+myfilelist <- lapply(ff, read_tcr)
+names(myfilelist)<-list.files(path=indir, full.names=FALSE)
+
+#create separate file list with top 50
+read_tcr_top<-function(s){
+  tcr_table_50<-read.table(s,header=T,sep="\t")
+  tcr_table_50<-tcr_table_50 %>%
+    select(productive_frequency, cdr3_amino_acid, v_gene, d_gene, j_gene) %>%
+    filter(!is.na(productive_frequency)) %>%
+    slice_max(order_by = productive_frequency, n = 50, with_ties = TRUE)
+  return(tcr_table_50)
+}
+
+#create separate file list with top 100
+read_tcr_top100<-function(s){
+  tcr_table_100<-read.table(s,header=T,sep="\t")
+  tcr_table_100<-tcr_table_100 %>%
+    select(productive_frequency, cdr3_amino_acid, v_gene, d_gene, j_gene) %>%
+    filter(!is.na(productive_frequency)) %>%
+    slice_max(order_by = productive_frequency, n = 100, with_ties = TRUE)
+  return(tcr_table_100)
+}
+
+#create separate file list with top 500
+read_tcr_top500<-function(s){
+  tcr_table_500<-read.table(s,header=T,sep="\t")
+  tcr_table_500<-tcr_table_500 %>%
+    select(productive_frequency, cdr3_amino_acid, v_gene, d_gene, j_gene) %>%
+    filter(!is.na(productive_frequency)) %>%
+    slice_max(order_by = productive_frequency, n = 500, with_ties = TRUE)
+  return(tcr_table_500)
+}
+
+myfilelist_top50<- lapply(ff,read_tcr_top)
+names(myfilelist_top50)<-list.files(path=indir, full.names=FALSE)
+
+myfilelist_top100<-lapply(ff,read_tcr_top100)
+names(myfilelist_top100)<-list.files(path=indir, full.names=FALSE)
+
+myfilelist_top500<-lapply(ff,read_tcr_top500)
+names(myfilelist_top500)<-list.files(path=indir, full.names=FALSE)
+
+```
+
+## Correlation scatter plots, heatmaps and tables
+This code block creates correlation scatter plots comparing productive frequencies for the top 50, top 100 and top 500 clones.  It also creates a heatmap and a summary table with the correlation values for all pairwise comparisons.  At the end it also summarizes the number of clones in the final merge.  This gives and indication if there is a significant mismatch in the number of matching clones between any two files.  (e.g. the top 50 clones in one file --the file listed in rows -- are contained within the top 53 of the paired file.) 
+
+Note many of the variables all say "withd" because the original analysis was performed excluding the d genes and this if code including the d genes.  (See code from 9/17/2021 analysis...including the d genes did not significantly change results, so ultimately the following code which includes the d genes was used.)
+
+```{r}
+library(gridExtra)
+library(reshape2)
+
+
+#create inner_join function that include d gene
+merge_tcrs_withd<-function(dd1, dd2){
+  merged_files_d<-inner_join(dd1, dd2, by=c("v_gene" = "v_gene", "j_gene" ="j_gene", "cdr3_amino_acid"= "cdr3_amino_acid","d_gene"="d_gene"))
+  return(merged_files_d)
+}
+
+#make empty lists for plots and correlations
+myplots_withd<-list()
+mycorrs_withd<-list()
+mydims_withd<-list()
+
+#run loop such that i=top 50 clone tsvs and h=full clone list
+#e.g. myplots[[1]][[2]]= a comparison of the top50 clones of file 1 to
+# all clones in file 2
+
+for (i in 1:length(myfilelist)){
+  #create plot and correlation list for file i within myplot_list
+  myplots_withd[[i]]<-list()
+  mycorrs_withd[[i]]<-list()
+  mydims_withd[[i]]<-list()
+  
+  for (h in 1:length(myfilelist)){
+    if (i==h) next
+    tcr_i_h_withd<-merge_tcrs_withd(myfilelist_top50[[i]],myfilelist[[h]])
+    
+    p_withd<-ggplot(tcr_i_h_withd, aes(x=productive_frequency.x, y= productive_frequency.y)) +
+      geom_point()+
+      scale_x_log10() +
+      scale_y_log10() +
+      geom_abline(slope = 1, intercept = 0, linetype=2, color = "red") +
+      theme_classic(base_size = 14) +
+      ggtitle("correlation of productive frequency of top 50 clones")
+  
+    correlation_withd<-cor(tcr_i_h_withd$productive_frequency.x, tcr_i_h_withd$productive_frequency.y)
+    dimension50_withd<-dim(tcr_i_h_withd)
+    
+    myplots_withd[[i]][[h]]<-p_withd
+    mycorrs_withd[[i]][[h]]<-correlation_withd
+    mydims_withd[[i]][[h]]<-dimension50_withd
+    
+  }
+}
+
+names(myplots_withd)<-list.files(path=indir, full.names=FALSE)
+names(mydims_withd)<-list.files(path=indir, full.names=FALSE)
+
+NameList<-list.files(path=indir, full.names=FALSE)
+
+# function to display all correlations and plots.
+# will also write to file
+disp_plots_corr_withd<-function(file1,file2){
+  cat(paste("Top 50 clones of ",NameList[file1],"compared to clones of ",NameList[file2],"\n"))
+  cat(paste("Pearson Correlation = ",mycorrs_withd[[file1]][[file2]]))
+  print(myplots_withd[[file1]][[file2]])
+  #print plots to file
+  png_file<-paste(outdir,"top50_",NameList[file1],"_",NameList[file2],".png",sep="")
+  png(file=png_file,width=600, height=350)
+  print(myplots_withd[[file1]][[file2]])
+  dev.off()
+}
+for (i in 1:length(myfilelist)){
+  for (h in 1:length(myfilelist)){
+    if (i==h) next
+    disp_plots_corr_withd(i,h)
+  }
+}
+#make matrix from mycorrs such that rows = top clones data and cols = all clones datas
+mycorrs_mx_withd<-matrix(nrow=length(myfilelist),ncol=length(myfilelist))
+for (i in 1:length(myfilelist)){
+  for (h in 1:length(myfilelist)){
+    if (i==h){
+      mycorrs_mx_withd[i,h]<-NA
+  }else{
+      mycorrs_mx_withd[i,h]<-mycorrs_withd[[i]][[h]]}
+  }
+}
+rownames(mycorrs_mx_withd)<-NameList
+colnames(mycorrs_mx_withd)<-NameList
+#prepare correlation matrix for heatmap
+melted_corr_withd <- melt(mycorrs_mx_withd)
+#plot correlation heatmap
+ggplot(data = melted_corr_withd, aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+   midpoint = 0, limit = c(-1,1), space = "Lab", 
+   name="Pearson\nCorrelation") +
+  theme_minimal()+ 
+ theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+    size = 12, hjust = 1))+
+  ggtitle("Pearson correlations for top 50 clones") + 
+  xlab("") +
+  ylab("")
+# Heatmap not very informative, print table as well
+mycorrs_mx_withd %>% 
+  DT::datatable()
+
+##############################################
+### Repeat analysis with top 100 clones  #####
+##############################################
+#make empty lists for plots and correlations
+myplots100_withd<-list()
+mycorrs100_withd<-list()
+mydims100_withd<-list()
+#run loop such that i=top 100 clone tsvs and h=full clone list
+#e.g. myplots[[1]][[2]]= a comparison of the top100 clones of file 1 to
+# all clones in file 2
+for (i in 1:length(myfilelist)){
+  #create plot and correlation list for file i within myplot_list
+  myplots100_withd[[i]]<-list()
+  mycorrs100_withd[[i]]<-list()
+  mydims100_withd[[i]]<-list()
+  
+  for (h in 1:length(myfilelist)){
+    if (i==h) next
+    tcr100_i_h_withd<-merge_tcrs_withd(myfilelist_top100[[i]],myfilelist[[h]])
+    
+    p100_withd<-ggplot(tcr100_i_h_withd, aes(x=productive_frequency.x, y= productive_frequency.y)) +
+      geom_point()+
+      scale_x_log10() +
+      scale_y_log10() +
+      geom_abline(slope = 1, intercept = 0, linetype=2, color = "red") +
+      theme_classic(base_size = 14) +
+      ggtitle("correlation of productive frequency of top 100 clones")
+  
+    correlation100_withd<-cor(tcr100_i_h_withd$productive_frequency.x, tcr100_i_h_withd$productive_frequency.y)
+    dimensions100_withd<-dim(tcr100_i_h_withd)
+    
+    myplots100_withd[[i]][[h]]<-p100_withd
+    mycorrs100_withd[[i]][[h]]<-correlation100_withd
+    mydims100_withd[[i]][[h]]<-dimensions100_withd
+    
+  }
+}
+names(myplots100_withd)<-list.files(path=indir, full.names=FALSE)
+names(mydims100_withd)<-list.files(path=indir, full.names=FALSE)
+# function to display all correlations and plots for top100.
+# will also write to file
+disp_plots_corr100_withd<-function(file1,file2){
+  cat(paste("Top 100 clones of ",NameList[file1],"compared to clones of ",NameList[file2],"\n"))
+  cat(paste("Pearson Correlation = ",mycorrs100_withd[[file1]][[file2]]))
+  print(myplots100_withd[[file1]][[file2]])
+  #print plots to file
+  png_file<-paste(outdir,"top100_",NameList[file1],"_",NameList[file2],".png",sep="")
+  png(file=png_file,width=600, height=350)
+  print(myplots100_withd[[file1]][[file2]])
+  dev.off()
+}
+for (i in 1:length(myfilelist)){
+  for (h in 1:length(myfilelist)){
+    if (i==h) next
+    disp_plots_corr100_withd(i,h)
+  }
+}
+#make matrix from mycorrs such that rows = top clones data and cols = all clones datas
+mycorrs100_mx_withd<-matrix(nrow=length(myfilelist),ncol=length(myfilelist))
+for (i in 1:length(myfilelist)){
+  for (h in 1:length(myfilelist)){
+    if (i==h){
+      mycorrs100_mx_withd[i,h]<-NA
+  }else{
+      mycorrs100_mx_withd[i,h]<-mycorrs100_withd[[i]][[h]]}
+  }
+}
+rownames(mycorrs100_mx_withd)<-NameList
+colnames(mycorrs100_mx_withd)<-NameList
+#prepare correlation matrix for heatmap
+melted_corr100_withd <- melt(mycorrs100_mx_withd)
+#plot correlation heatmap
+ggplot(data = melted_corr100_withd, aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+   midpoint = 0, limit = c(-1,1), space = "Lab", 
+   name="Pearson\nCorrelation") +
+  theme_minimal()+ 
+ theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+    size = 12, hjust = 1))+
+  ggtitle("Pearson correlations for top 100 clones") + 
+  xlab("") +
+  ylab("")
+# Heatmap not very informative, print table as well
+mycorrs100_mx_withd %>% 
+  DT::datatable()
+
+##############################################
+### Repeat analysis with top 500 clones  #####
+##############################################
+#make empty lists for plots and correlations
+myplots500_withd<-list()
+mycorrs500_withd<-list()
+mydims500_withd<-list()
+#run loop such that i=top 500 clone tsvs and h=full clone list
+#e.g. myplots[[1]][[2]]= a comparison of the top500 clones of file 1 to
+# all clones in file 2
+for (i in 1:length(myfilelist)){
+  #create plot and correlation list for file i within myplot_list
+  myplots500_withd[[i]]<-list()
+  mycorrs500_withd[[i]]<-list()
+  mydims500_withd[[i]]<-list()
+  
+  for (h in 1:length(myfilelist)){
+    if (i==h) next
+    tcr500_i_h_withd<-merge_tcrs_withd(myfilelist_top500[[i]],myfilelist[[h]])
+    
+    p500_withd<-ggplot(tcr500_i_h_withd, aes(x=productive_frequency.x, y= productive_frequency.y)) +
+      geom_point()+
+      scale_x_log10() +
+      scale_y_log10() +
+      geom_abline(slope = 1, intercept = 0, linetype=2, color = "red") +
+      theme_classic(base_size = 14) +
+      ggtitle("correlation of productive frequency of top 500 clones")
+  
+    correlation500_withd<-cor(tcr500_i_h_withd$productive_frequency.x, tcr500_i_h_withd$productive_frequency.y)
+    dimensions500_withd<-dim(tcr500_i_h_withd)
+    
+    myplots500_withd[[i]][[h]]<-p500_withd
+    mycorrs500_withd[[i]][[h]]<-correlation500_withd
+    mydims500_withd[[i]][[h]]<-dimensions500_withd
+    
+  }
+}
+names(myplots500_withd)<-list.files(path=indir, full.names=FALSE)
+names(mydims500_withd)<-list.files(path=indir, full.names=FALSE)
+# function to display all correlations and plots for top100.
+# will also write to file
+disp_plots_corr500_withd<-function(file1,file2){
+  cat(paste("Top 500 clones of ",NameList[file1],"compared to clones of ",NameList[file2],"\n"))
+  cat(paste("Pearson Correlation = ",mycorrs500_withd[[file1]][[file2]]))
+  print(myplots500_withd[[file1]][[file2]])
+  #print plots to file
+  png_file<-paste(outdir,"top500_",NameList[file1],"_",NameList[file2],".png",sep="")
+  png(file=png_file,width=600, height=350)
+  print(myplots500_withd[[file1]][[file2]])
+  dev.off()
+}
+for (i in 1:length(myfilelist)){
+  for (h in 1:length(myfilelist)){
+    if (i==h) next
+    disp_plots_corr500_withd(i,h)
+  }
+}
+#make matrix from mycorrs such that rows = top clones data and cols = all clones datas
+mycorrs500_mx_withd<-matrix(nrow=length(myfilelist),ncol=length(myfilelist))
+for (i in 1:length(myfilelist)){
+  for (h in 1:length(myfilelist)){
+    if (i==h){
+      mycorrs500_mx_withd[i,h]<-NA
+  }else{
+      mycorrs500_mx_withd[i,h]<-mycorrs500_withd[[i]][[h]]}
+  }
+}
+rownames(mycorrs500_mx_withd)<-NameList
+colnames(mycorrs500_mx_withd)<-NameList
+#prepare correlation matrix for heatmap
+melted_corr500_withd <- melt(mycorrs500_mx_withd)
+#plot correlation heatmap
+ggplot(data = melted_corr500_withd, aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+   midpoint = 0, limit = c(-1,1), space = "Lab", 
+   name="Pearson\nCorrelation") +
+  theme_minimal()+ 
+ theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+    size = 12, hjust = 1))+
+  ggtitle("Pearson correlations for top 500 clones") + 
+  xlab("") +
+  ylab("")
+# Heatmap not very informative, print table as well
+mycorrs500_mx_withd %>% 
+  DT::datatable()
+
+
+######### print dimensions to evaluate if some clones are being lost with the inner join
+
+#make matrix from mydims such that rows = top clones data and cols = all clones datas
+# for top50 with d genes
+mydims_mx_withd<-matrix(nrow=length(myfilelist),ncol=length(myfilelist))
+for (i in 1:length(myfilelist)){
+  for (h in 1:length(myfilelist)){
+    if (i==h){
+      mydims_mx_withd[i,h]<-NA
+  }else{
+      mydims_mx_withd[i,h]<-mydims_withd[[i]][[h]][[1]]}
+  }
+}
+
+rownames(mydims_mx_withd)<-NameList
+colnames(mydims_mx_withd)<-NameList
+
+#print matrix
+print("Total number of clones after merge.  Rows = Top 50 clone file.")
+mydims_mx_withd %>% 
+  DT::datatable()
+
+# for top100 with d genes
+mydims100_mx_withd<-matrix(nrow=length(myfilelist),ncol=length(myfilelist))
+for (i in 1:length(myfilelist)){
+  for (h in 1:length(myfilelist)){
+    if (i==h){
+      mydims100_mx_withd[i,h]<-NA
+  }else{
+      mydims100_mx_withd[i,h]<-mydims100_withd[[i]][[h]][[1]]}
+  }
+}
+rownames(mydims100_mx_withd)<-NameList
+colnames(mydims100_mx_withd)<-NameList
+#print matrix
+print("Total number of clones after merge.  Rows = Top 100 clone file.")
+mydims100_mx_withd %>% 
+  DT::datatable()
+
+# for top500 with d genes
+mydims500_mx_withd<-matrix(nrow=length(myfilelist),ncol=length(myfilelist))
+for (i in 1:length(myfilelist)){
+  for (h in 1:length(myfilelist)){
+    if (i==h){
+      mydims500_mx_withd[i,h]<-NA
+  }else{
+      mydims500_mx_withd[i,h]<-mydims500_withd[[i]][[h]][[1]]}
+  }
+}
+rownames(mydims500_mx_withd)<-NameList
+colnames(mydims500_mx_withd)<-NameList
+#print matrix
+print("Total number of clones after merge.  Rows = Top 500 clone file.")
+mydims500_mx_withd %>% 
+  DT::datatable()
+
+```
+## Check productive frequencies
+```{r}
+########################################
+##### Productive Frequency Ranges ######
+########################################
+NameList<-list.files(path=indir, full.names=FALSE)
+# get ranges of productive frequencies
+prod_freq_matrix<-matrix(nrow=length(myfilelist),ncol=12)
+rownames(prod_freq_matrix)<-NameList
+colnames(prod_freq_matrix)<-c("all_clones_min","all_clone_max","all_clones_mean","top500_min","top500_max","top500_mean","top100_min","top100_max","top100_mean", "top50_min","top50_max","top50_mean")
+## range for all clones
+for (i in 1:length(myfilelist)){
+  prod_freq_matrix[i,1:3]<-c(range(myfilelist[[i]]$productive_frequency),mean(myfilelist[[i]]$productive_frequency))
+  prod_freq_matrix[i,4:6]<-c(range(myfilelist_top500[[i]]$productive_frequency),mean(myfilelist_top500[[i]]$productive_frequency))
+  prod_freq_matrix[i,7:9]<-c(range(myfilelist_top100[[i]]$productive_frequency),mean(myfilelist_top100[[i]]$productive_frequency))
+  prod_freq_matrix[i,10:12]<-c(range(myfilelist_top50[[i]]$productive_frequency),mean(myfilelist_top50[[i]]$productive_frequency))
+}
+# print productive frequency summary table
+prod_freq_matrix %>% 
+  DT::datatable()
+
+#send to file
+prodFreqFile <- paste(outdir,"ProductiveFrequencyTable.csv",sep="")
+write.table(prod_freq_matrix,prodFreqFile,col.names=T)
+```
+
+# Productive Frequency Summaries
+This code block calculates the mean productive frequencies, fraction of clones with productive frequencies <0.001 and  < 0.01 for all files (all clones,top50, top100, top500).
+
+
+```{r}
+ #calculate mean productive frequencies for all files
+top50_clone_freq_mean<-mean(prod_freq_matrix[,"top50_mean"])
+top100_clone_freq_mean<-mean(prod_freq_matrix[,"top100_mean"])
+top500_clone_freq_mean<-mean(prod_freq_matrix[,"top500_mean"])
+all_clone_freq_mean<-mean(prod_freq_matrix[,"all_clones_mean"])
+
+# calculate fraction of clones with freq <0.001
+top50_freq_one_tenth<-sum(myfilelist_top50[[1]]$productive_frequency <0.001)/sum(myfilelist_top50[[1]]$productive_frequency>0)
+top100_freq_one_tenth<-sum(myfilelist_top100[[1]]$productive_frequency <0.001)/sum(myfilelist_top100[[1]]$productive_frequency>0)
+top500_freq_one_tenth<-sum(myfilelist_top500[[1]]$productive_frequency <0.001)/sum(myfilelist_top500[[1]]$productive_frequency>0)
+all_freq_one_tenth<-sum(myfilelist[[1]]$productive_frequency <0.001)/sum(myfilelist[[1]]$productive_frequency>0)
+
+# calculate fraction of clones with freq <0.01
+top50_freq_one<-sum(myfilelist_top50[[1]]$productive_frequency<0.01)/sum(myfilelist_top50[[1]]$productive_frequency>0)
+top100_freq_one<-sum(myfilelist_top100[[1]]$productive_frequency<0.01)/sum(myfilelist_top100[[1]]$productive_frequency>0)
+top500_freq_one<-sum(myfilelist_top500[[1]]$productive_frequency<0.01)/sum(myfilelist_top500[[1]]$productive_frequency>0)
+all_freq_one<-sum(myfilelist[[1]]$productive_frequency<0.01)/sum(myfilelist[[1]]$productive_frequency>0)
+```
+
+
+## Total Clones
+This code block outputs the total clones in each original file.
+
+```{r}
+# make table of original file lengths
+
+total_clones<-matrix(nrow=length(myfilelist),ncol=1)
+for (i in 1:length(myfilelist)){
+  total_clones[i,1]<-dim(myfilelist[[i]])[[1]]
+}
+
+rownames(total_clones)<- NameList
+colnames(total_clones)<-c("Total Clones")
+
+#print matrix
+print("Total clones in each file")
+total_clones %>% 
+  DT::datatable()
+```
+
+# Make a histogram of the productive frequencies of each sample
+```{r}
+
+#create empty data frame
+prod_freq_df<-data.frame()
+
+
+# add productive frequencies to the dataframe
+for (i in 1:length(myfilelist)){
+  #make a dataframe from the ith productive frequency numbers
+  temp_df<-data.frame(productive_frequency=myfilelist[[i]]$productive_frequency)
+  #add info about where data came from
+  temp_df$fileName <- names(myfilelist[i])
+  # merge dataframes to make one large dataframe
+  prod_freq_df<- rbind(prod_freq_df,temp_df)
+}
+
+
+
+ggplot(prod_freq_df, aes(productive_frequency, fill = fileName)) + 
+   geom_histogram(alpha = 0.5, bins=100) +
+   scale_x_log10() +
+   geom_abline(slope = 1, intercept = 0, linetype=2) +
+   theme_classic(base_size = 14) 
+
+ggplot(prod_freq_df, aes(productive_frequency, fill = fileName)) + 
+   geom_histogram(alpha = 0.5, bins=50, position = 'identity') +
+   scale_x_log10() +
+   geom_abline(slope = 1, intercept = 0, linetype=2) +
+   theme_classic(base_size = 14) 
+
+```
+## Notes from analysis of intra-trial 10057
+Very good correlation when comparing top 10057_16282957.tsv clones to the other two controls and when compring the top  (>0.99), but only 0.55-0.57% correlation when comparing the other two with each other or with 16282922.  Productive frequencies are on par between controls when comparing their ranges (min and max productive frequencies).  
+
+The following correlation plots seem to show the breakdown which is not just in low productive frequency clones:
+top50_10057_16282932.tsv_10057_16282857.tsv.png
+top50_10057_16282857.tsv_10057_16282932.tsv.png
+top50_10057_16282922.tsv_10057_16282932.tsv.png
+top50_10057_16282922.tsv_10057_16282857.tsv.png
+
+In review of the data, it looks as if 2 of the disconnects are caused by the following issue in the original data:
+* in control file 16282857, the clone with aa sequence CSARGESSSYEQYF is listed 3 times with 3 different productive frequencies.  They appear to be listed uniquely due to different nucleotide sequences called.
+
+[16282857 CSARGE clone](/Users/jennifer/Documents/tmp_TCR/10057_16282857_CSARGE_replicate.png)
+
+Since the top50 clones match with the < top 60 clones in the other files, I will revise the code to look at the correlation when comparing the top50 clones in one files to the top 100 in the other.
+
+Will call these files "top50_100_file1_file2"
+
+## repeat analysis using top50 of one file compared to top100 in the other (rather than all clones).
+
+### Correlation scatter plots and heatmaps
+
+```{r}
+library(gridExtra)
+library(reshape2)
+
+NameList<-list.files(path=indir, full.names=FALSE)
+
+#create inner_join function that include d gene
+merge_tcrs_withd<-function(dd1, dd2){
+  merged_files_d<-inner_join(dd1, dd2, by=c("v_gene" = "v_gene", "j_gene" ="j_gene", "cdr3_amino_acid"= "cdr3_amino_acid","d_gene"="d_gene"))
+  return(merged_files_d)
+}
+
+#make empty lists for plots and correlations
+myplots_withd<-list()
+mycorrs_withd<-list()
+mydims_withd<-list()
+
+#run loop such that i=top 50 clone tsvs and h=top 100 clone list
+#e.g. myplots[[1]][[2]]= a comparison of the top50 clones of file 1 to
+# top100 clones in file 2
+
+for (i in 1:length(myfilelist)){
+  #create plot and correlation list for file i within myplot_list
+  myplots_withd[[i]]<-list()
+  mycorrs_withd[[i]]<-list()
+  mydims_withd[[i]]<-list()
+  
+  for (h in 1:length(myfilelist)){
+    if (i==h) next
+    tcr_i_h_withd<-merge_tcrs_withd(myfilelist_top50[[i]],myfilelist_top100[[h]])
+    
+    title_var <- paste("top50_",NameList[i],"vs_top100",NameList[h],"productive Frequency correlation", sep="")
+    p_withd<-ggplot(tcr_i_h_withd, aes(x=productive_frequency.x, y= productive_frequency.y)) +
+      geom_point()+
+      scale_x_log10() +
+      scale_y_log10() +
+      geom_abline(slope = 1, intercept = 0, linetype=2, color = "red") +
+      theme_classic(base_size = 14) +
+      ggtitle(title_var)
+  
+    correlation_withd<-cor(tcr_i_h_withd$productive_frequency.x, tcr_i_h_withd$productive_frequency.y)
+    dimension50_withd<-dim(tcr_i_h_withd)
+    
+    myplots_withd[[i]][[h]]<-p_withd
+    mycorrs_withd[[i]][[h]]<-correlation_withd
+    mydims_withd[[i]][[h]]<-dimension50_withd
+    
+  }
+}
+
+names(myplots_withd)<-list.files(path=indir, full.names=FALSE)
+names(mydims_withd)<-list.files(path=indir, full.names=FALSE)
+
+
+# function to display all correlations and plots.
+# will also write to file
+disp_plots_corr_withd<-function(file1,file2){
+  cat(paste("Top 50 clones of ",NameList[file1],"compared to top 100 clones of ",NameList[file2],"\n"))
+  cat(paste("Pearson Correlation = ",mycorrs_withd[[file1]][[file2]]))
+  print(myplots_withd[[file1]][[file2]])
+  #print plots to file
+  png_file<-paste(outdir,"top50_",NameList[file1],"_vs_top100",NameList[file2],".png",sep="")
+  png(file=png_file,width=600, height=350)
+  print(myplots_withd[[file1]][[file2]])
+  dev.off()
+}
+for (i in 1:length(myfilelist)){
+  for (h in 1:length(myfilelist)){
+    if (i==h) next
+    disp_plots_corr_withd(i,h)
+  }
+}
+#make matrix from mycorrs such that rows = top clones data and cols = all clones datas
+mycorrs_mx_withd<-matrix(nrow=length(myfilelist),ncol=length(myfilelist))
+for (i in 1:length(myfilelist)){
+  for (h in 1:length(myfilelist)){
+    if (i==h){
+      mycorrs_mx_withd[i,h]<-NA
+  }else{
+      mycorrs_mx_withd[i,h]<-mycorrs_withd[[i]][[h]]}
+  }
+}
+rownames(mycorrs_mx_withd)<-NameList
+colnames(mycorrs_mx_withd)<-NameList
+#prepare correlation matrix for heatmap
+melted_corr_withd <- melt(mycorrs_mx_withd)
+#plot correlation heatmap
+ggplot(data = melted_corr_withd, aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+   midpoint = 0, limit = c(-1,1), space = "Lab", 
+   name="Pearson\nCorrelation") +
+  theme_minimal()+ 
+ theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+    size = 12, hjust = 1))+
+  ggtitle("Pearson correlations for top 50 clones") + 
+  xlab("") +
+  ylab("")
+# Heatmap not very informative, print table as well
+mycorrs_mx_withd %>% 
+  DT::datatable()
+
+
+
+```
+
+Results are much better!  I will continue similar analysis (top50 vs top100) for remaining analysis.
+
+# Intra-trial concordance for Trial NRG-LU004
+
+## repeat libraries needed for all functions
+```{r}
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(gridExtra)
+library(reshape2)
+
+```
+
+## summary of all functions used for all code
+```{r}
+#read table function that can accept a variable as a table name
+read_tcr<-function(k){
+  tcr_table<-read.table(k,header=T,sep="\t")
+  tcr_table<-tcr_table %>%
+    select(productive_frequency, cdr3_amino_acid, v_gene, d_gene, j_gene) %>%
+    filter(!is.na(productive_frequency))
+  return(tcr_table)
+}
+
+#create separate file list with top 50
+read_tcr_top<-function(s){
+  tcr_table_50<-read.table(s,header=T,sep="\t")
+  tcr_table_50<-tcr_table_50 %>%
+    select(productive_frequency, cdr3_amino_acid, v_gene, d_gene, j_gene) %>%
+    filter(!is.na(productive_frequency)) %>%
+    slice_max(order_by = productive_frequency, n = 50, with_ties = TRUE)
+  return(tcr_table_50)
+}
+
+#create separate file list with top 100
+read_tcr_top100<-function(s){
+  tcr_table_100<-read.table(s,header=T,sep="\t")
+  tcr_table_100<-tcr_table_100 %>%
+    select(productive_frequency, cdr3_amino_acid, v_gene, d_gene, j_gene) %>%
+    filter(!is.na(productive_frequency)) %>%
+    slice_max(order_by = productive_frequency, n = 100, with_ties = TRUE)
+  return(tcr_table_100)
+}
+
+#inner_join function that includes d gene
+merge_tcrs_withd<-function(dd1, dd2){
+  merged_files_d<-inner_join(dd1, dd2, by=c("v_gene" = "v_gene", "j_gene" ="j_gene", "cdr3_amino_acid"= "cdr3_amino_acid","d_gene"="d_gene"))
+  return(merged_files_d)
+}
+
+# function to display all correlations and plots.
+# will also write to file
+disp_plots_corr_withd<-function(file1,file2){
+  cat(paste("Top 50 clones of ",NameList[file1],"compared to clones of ",NameList[file2],"\n"))
+  cat(paste("Pearson Correlation = ",mycorrs_withd[[file1]][[file2]]))
+  print(myplots_withd[[file1]][[file2]])
+  #print plots to file
+  png_file<-paste(outdir,"top50_",NameList[file1],"_",NameList[file2],".png",sep="")
+  png(file=png_file,width=600, height=350)
+  print(myplots_withd[[file1]][[file2]])
+  dev.off()
+}
+
+
+
+```
+
+## read in files
+```{r}
+#set input directory
+indir<-"/Users/jennifer/Documents/tmp_TCR/data_NRG-LU004"
+outdir<-"/Users/jennifer/Documents/tmp_TCR/concord_output/NRGLU004/"
+```
+
+##  create top50, top100 file lists
+
+
+```{r,eval=TRUE}
+
+# get list of filenames from input directory
+ff <- list.files(path=indir, full.names=TRUE)
+
+
+# apply read_tcr function to list of files, add file names to each list member
+myfilelist <- lapply(ff, read_tcr)
+names(myfilelist)<-list.files(path=indir, full.names=FALSE)
+
+myfilelist_top50<- lapply(ff,read_tcr_top)
+names(myfilelist_top50)<-list.files(path=indir, full.names=FALSE)
+
+myfilelist_top100<-lapply(ff,read_tcr_top100)
+names(myfilelist_top100)<-list.files(path=indir, full.names=FALSE)
+
+```
+
+## Correlation scatter plots, heatmaps and tables
+```{r}
+
+NameList<-list.files(path=indir, full.names=FALSE)
+
+#make empty lists for plots and correlations
+myplots_withd<-list()
+mycorrs_withd<-list()
+mydims_withd<-list()
+
+#run loop such that i=top 50 clone tsvs and h=top 100 clone list
+#e.g. myplots[[1]][[2]]= a comparison of the top50 clones of file 1 to
+# top100 clones in file 2
+
+for (i in 1:length(myfilelist)){
+  #create plot and correlation list for file i within myplot_list
+  myplots_withd[[i]]<-list()
+  mycorrs_withd[[i]]<-list()
+  mydims_withd[[i]]<-list()
+  
+  for (h in 1:length(myfilelist)){
+    if (i==h) next
+    tcr_i_h_withd<-merge_tcrs_withd(myfilelist_top50[[i]],myfilelist_top100[[h]])
+    
+    title_var <- paste("top50_",NameList[i],"_vs_top100_",NameList[h],"productive Frequency correlation", sep="")
+    p_withd<-ggplot(tcr_i_h_withd, aes(x=productive_frequency.x, y= productive_frequency.y)) +
+      geom_point()+
+      scale_x_log10() +
+      scale_y_log10() +
+      geom_abline(slope = 1, intercept = 0, linetype=2, color = "red") +
+      theme_classic(base_size = 14) +
+      ggtitle(title_var)
+  
+    correlation_withd<-cor(tcr_i_h_withd$productive_frequency.x, tcr_i_h_withd$productive_frequency.y)
+    dimension50_withd<-dim(tcr_i_h_withd)
+    
+    myplots_withd[[i]][[h]]<-p_withd
+    mycorrs_withd[[i]][[h]]<-correlation_withd
+    mydims_withd[[i]][[h]]<-dimension50_withd
+    
+  }
+}
+
+names(myplots_withd)<-list.files(path=indir, full.names=FALSE)
+names(mydims_withd)<-list.files(path=indir, full.names=FALSE)
+
+
+
+
+for (i in 1:length(myfilelist)){
+  for (h in 1:length(myfilelist)){
+    if (i==h) next
+    disp_plots_corr_withd(i,h)
+  }
+}
+#make matrix from mycorrs such that rows = top 50 clones data and cols = top 100 clones data
+mycorrs_mx_withd<-matrix(nrow=length(myfilelist),ncol=length(myfilelist))
+for (i in 1:length(myfilelist)){
+  for (h in 1:length(myfilelist)){
+    if (i==h){
+      mycorrs_mx_withd[i,h]<-NA
+  }else{
+      mycorrs_mx_withd[i,h]<-mycorrs_withd[[i]][[h]]}
+  }
+}
+rownames(mycorrs_mx_withd)<-NameList
+colnames(mycorrs_mx_withd)<-NameList
+
+#prepare correlation matrix for heatmap
+melted_corr_withd <- melt(mycorrs_mx_withd)
+
+#plot correlation heatmap
+ggplot(data = melted_corr_withd, aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+   midpoint = 0, limit = c(-1,1), space = "Lab", 
+   name="Pearson\nCorrelation") +
+  theme_minimal()+ 
+ theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+    size = 12, hjust = 1))+
+  ggtitle("Pearson correlations for top 50 clones") + 
+  xlab("") +
+  ylab("")
+
+# Heatmap not very informative, print table as well
+mycorrs_mx_withd %>% 
+  DT::datatable()
+
+
+```
+
+## Check if top 50 of one file are being captured in top 100 of another file
+
+```{r}
+######### print dimensions to evaluate if some clones are being lost with the inner join
+
+#make matrix from mydims such that rows = top 50 clones data and cols = all clones data
+# for top50 with d genes
+mydims_mx_withd<-matrix(nrow=length(myfilelist),ncol=length(myfilelist))
+for (i in 1:length(myfilelist)){
+  for (h in 1:length(myfilelist)){
+    if (i==h){
+      mydims_mx_withd[i,h]<-NA
+  }else{
+      mydims_mx_withd[i,h]<-mydims_withd[[i]][[h]][[1]]}
+  }
+}
+
+rownames(mydims_mx_withd)<-NameList
+colnames(mydims_mx_withd)<-NameList
+
+#print matrix
+print("Total number of clones after merge.  Rows = Top 50 clone file.")
+mydims_mx_withd %>% 
+  DT::datatable()
+```
+
+## Total Clones
+This code block outputs the total clones in each original file.
+
+```{r}
+# make table of original file lengths
+
+total_clones<-matrix(nrow=length(myfilelist),ncol=1)
+for (i in 1:length(myfilelist)){
+  total_clones[i,1]<-dim(myfilelist[[i]])[[1]]
+}
+
+rownames(total_clones)<- NameList
+colnames(total_clones)<-c("Total Clones")
+
+#print matrix
+print("Total clones in each file")
+total_clones %>% 
+  DT::datatable()
+```
+
+# Make a histogram of the productive frequencies of each sample
+```{r}
+
+#create empty data frame
+prod_freq_df<-data.frame()
+
+
+# add productive frequencies to the dataframe
+for (i in 1:length(myfilelist)){
+  #make a dataframe from the ith productive frequency numbers
+  temp_df<-data.frame(productive_frequency=myfilelist[[i]]$productive_frequency)
+  #add info about where data came from
+  temp_df$fileName <- names(myfilelist[i])
+  # merge dataframes to make one large dataframe
+  prod_freq_df<- rbind(prod_freq_df,temp_df)
+}
+
+
+
+ggplot(prod_freq_df, aes(productive_frequency, fill = fileName)) + 
+   geom_histogram(alpha = 0.5, bins=100) +
+   scale_x_log10() +
+   geom_abline(slope = 1, intercept = 0, linetype=2) +
+   theme_classic(base_size = 14) 
+
+ggplot(prod_freq_df, aes(productive_frequency, fill = fileName)) + 
+   geom_histogram(alpha = 0.5, bins=50, position = 'identity') +
+   scale_x_log10() +
+   geom_abline(slope = 1, intercept = 0, linetype=2) +
+   theme_classic(base_size = 14) 
+
+```
+
+# Intra-trial analysis Trial ABTC-1603
+
+## read in files
+```{r}
+#set input directory
+indir<-"/Users/jennifer/Documents/tmp_TCR/data_ABTC1603"
+outdir<-"/Users/jennifer/Documents/tmp_TCR/concord_output/ABTC1603/"
+```
+
+##  create top50, top100 file lists
+
+
+```{r,eval=TRUE}
+
+# get list of filenames from input directory
+ff <- list.files(path=indir, full.names=TRUE)
+
+
+# apply read_tcr function to list of files, add file names to each list member
+myfilelist <- lapply(ff, read_tcr)
+names(myfilelist)<-list.files(path=indir, full.names=FALSE)
+
+myfilelist_top50<- lapply(ff,read_tcr_top)
+names(myfilelist_top50)<-list.files(path=indir, full.names=FALSE)
+
+myfilelist_top100<-lapply(ff,read_tcr_top100)
+names(myfilelist_top100)<-list.files(path=indir, full.names=FALSE)
+
+```
+
+## Correlation scatter plots, heatmaps and tables
+```{r}
+NameList<-list.files(path=indir, full.names=FALSE)
+
+#make empty lists for plots and correlations
+myplots_withd<-list()
+mycorrs_withd<-list()
+mydims_withd<-list()
+
+#run loop such that i=top 50 clone tsvs and h=top 100 clone list
+#e.g. myplots[[1]][[2]]= a comparison of the top50 clones of file 1 to
+# top100 clones in file 2
+
+for (i in 1:length(myfilelist)){
+  #create plot and correlation list for file i within myplot_list
+  myplots_withd[[i]]<-list()
+  mycorrs_withd[[i]]<-list()
+  mydims_withd[[i]]<-list()
+  
+  for (h in 1:length(myfilelist)){
+    if (i==h) next
+    tcr_i_h_withd<-merge_tcrs_withd(myfilelist_top50[[i]],myfilelist_top100[[h]])
+    
+    title_var <- paste("top50_",NameList[i],"vs_top100",NameList[h],"productive Frequency correlation", sep="")
+    p_withd<-ggplot(tcr_i_h_withd, aes(x=productive_frequency.x, y= productive_frequency.y)) +
+      geom_point()+
+      scale_x_log10() +
+      scale_y_log10() +
+      geom_abline(slope = 1, intercept = 0, linetype=2, color = "red") +
+      theme_classic(base_size = 14) +
+      ggtitle(title_var)
+  
+    correlation_withd<-cor(tcr_i_h_withd$productive_frequency.x, tcr_i_h_withd$productive_frequency.y)
+    dimension50_withd<-dim(tcr_i_h_withd)
+    
+    myplots_withd[[i]][[h]]<-p_withd
+    mycorrs_withd[[i]][[h]]<-correlation_withd
+    mydims_withd[[i]][[h]]<-dimension50_withd
+    
+  }
+}
+
+names(myplots_withd)<-list.files(path=indir, full.names=FALSE)
+names(mydims_withd)<-list.files(path=indir, full.names=FALSE)
+
+
+
+
+for (i in 1:length(myfilelist)){
+  for (h in 1:length(myfilelist)){
+    if (i==h) next
+    disp_plots_corr_withd(i,h)
+  }
+}
+#make matrix from mycorrs such that rows = top 50 clones data and cols = top 100 clones data
+mycorrs_mx_withd<-matrix(nrow=length(myfilelist),ncol=length(myfilelist))
+for (i in 1:length(myfilelist)){
+  for (h in 1:length(myfilelist)){
+    if (i==h){
+      mycorrs_mx_withd[i,h]<-NA
+  }else{
+      mycorrs_mx_withd[i,h]<-mycorrs_withd[[i]][[h]]}
+  }
+}
+rownames(mycorrs_mx_withd)<-NameList
+colnames(mycorrs_mx_withd)<-NameList
+
+#prepare correlation matrix for heatmap
+melted_corr_withd <- melt(mycorrs_mx_withd)
+
+#plot correlation heatmap
+ggplot(data = melted_corr_withd, aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+   midpoint = 0, limit = c(-1,1), space = "Lab", 
+   name="Pearson\nCorrelation") +
+  theme_minimal()+ 
+ theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+    size = 12, hjust = 1))+
+  ggtitle("Pearson correlations for top 50 clones") + 
+  xlab("") +
+  ylab("")
+
+# Heatmap not very informative, print table as well
+mycorrs_mx_withd %>% 
+  DT::datatable()
+
+
+```
+
+## Check if top 50 of one file are being captured in top 100 of another file
+
+```{r}
+######### print dimensions to evaluate if some clones are being lost with the inner join
+
+#make matrix from mydims such that rows = top 50 clones data and cols = all clones data
+# for top50 with d genes
+mydims_mx_withd<-matrix(nrow=length(myfilelist),ncol=length(myfilelist))
+for (i in 1:length(myfilelist)){
+  for (h in 1:length(myfilelist)){
+    if (i==h){
+      mydims_mx_withd[i,h]<-NA
+  }else{
+      mydims_mx_withd[i,h]<-mydims_withd[[i]][[h]][[1]]}
+  }
+}
+
+rownames(mydims_mx_withd)<-NameList
+colnames(mydims_mx_withd)<-NameList
+
+#print matrix
+print("Total number of clones after merge.  Rows = Top 50 clone file.")
+mydims_mx_withd %>% 
+  DT::datatable()
+```
+
+## Total Clones
+This code block outputs the total clones in each original file.
+
+```{r}
+# make table of original file lengths
+
+total_clones<-matrix(nrow=length(myfilelist),ncol=1)
+for (i in 1:length(myfilelist)){
+  total_clones[i,1]<-dim(myfilelist[[i]])[[1]]
+}
+
+rownames(total_clones)<- NameList
+colnames(total_clones)<-c("Total Clones")
+
+#print matrix
+print("Total clones in each file")
+total_clones %>% 
+  DT::datatable()
+```
+
+# Make a histogram of the productive frequencies of each sample
+```{r}
+
+#create empty data frame
+prod_freq_df<-data.frame()
+
+
+# add productive frequencies to the dataframe
+for (i in 1:length(myfilelist)){
+  #make a dataframe from the ith productive frequency numbers
+  temp_df<-data.frame(productive_frequency=myfilelist[[i]]$productive_frequency)
+  #add info about where data came from
+  temp_df$fileName <- names(myfilelist[i])
+  # merge dataframes to make one large dataframe
+  prod_freq_df<- rbind(prod_freq_df,temp_df)
+}
+
+
+
+ggplot(prod_freq_df, aes(productive_frequency, fill = fileName)) + 
+   geom_histogram(alpha = 0.5, bins=100) +
+   scale_x_log10() +
+   geom_abline(slope = 1, intercept = 0, linetype=2) +
+   theme_classic(base_size = 14) 
+
+ggplot(prod_freq_df, aes(productive_frequency, fill = fileName)) + 
+   geom_histogram(alpha = 0.5, bins=50, position = 'identity') +
+   scale_x_log10() +
+   geom_abline(slope = 1, intercept = 0, linetype=2) +
+   theme_classic(base_size = 14) 
+
+```
+
+# Intersite Concordance Analysis
+
+## read in files
+```{r}
+#set input directory
+indir<-"/Users/jennifer/Documents/tmp_TCR/data_intersite"
+outdir<-"/Users/jennifer/Documents/tmp_TCR/concord_output/intersite/"
+```
+
+##  create top50, top100 file lists
+
+
+```{r,eval=TRUE}
+
+# get list of filenames from input directory
+ff <- list.files(path=indir, full.names=TRUE)
+
+
+# apply read_tcr function to list of files, add file names to each list member
+myfilelist <- lapply(ff, read_tcr)
+names(myfilelist)<-list.files(path=indir, full.names=FALSE)
+
+myfilelist_top50<- lapply(ff,read_tcr_top)
+names(myfilelist_top50)<-list.files(path=indir, full.names=FALSE)
+
+myfilelist_top100<-lapply(ff,read_tcr_top100)
+names(myfilelist_top100)<-list.files(path=indir, full.names=FALSE)
+
+```
+
+## Correlation scatter plots, heatmaps and tables
+```{r}
+
+NameList<-list.files(path=indir, full.names=FALSE)
+
+#make empty lists for plots and correlations
+myplots_withd<-list()
+mycorrs_withd<-list()
+mydims_withd<-list()
+
+#run loop such that i=top 50 clone tsvs and h=top 100 clone list
+#e.g. myplots[[1]][[2]]= a comparison of the top50 clones of file 1 to
+# top100 clones in file 2
+
+for (i in 1:length(myfilelist)){
+  #create plot and correlation list for file i within myplot_list
+  myplots_withd[[i]]<-list()
+  mycorrs_withd[[i]]<-list()
+  mydims_withd[[i]]<-list()
+  
+  for (h in 1:length(myfilelist)){
+    if (i==h) next
+    tcr_i_h_withd<-merge_tcrs_withd(myfilelist_top50[[i]],myfilelist_top100[[h]])
+    
+    title_var <- paste("top50_",NameList[i],"vs_top100",NameList[h],"productive Frequency correlation", sep="")
+    p_withd<-ggplot(tcr_i_h_withd, aes(x=productive_frequency.x, y= productive_frequency.y)) +
+      geom_point()+
+      scale_x_log10() +
+      scale_y_log10() +
+      geom_abline(slope = 1, intercept = 0, linetype=2, color = "red") +
+      theme_classic(base_size = 14) +
+      ggtitle(title_var)
+  
+    correlation_withd<-cor(tcr_i_h_withd$productive_frequency.x, tcr_i_h_withd$productive_frequency.y)
+    dimension50_withd<-dim(tcr_i_h_withd)
+    
+    myplots_withd[[i]][[h]]<-p_withd
+    mycorrs_withd[[i]][[h]]<-correlation_withd
+    mydims_withd[[i]][[h]]<-dimension50_withd
+    
+  }
+}
+
+names(myplots_withd)<-list.files(path=indir, full.names=FALSE)
+names(mydims_withd)<-list.files(path=indir, full.names=FALSE)
+
+
+
+
+for (i in 1:length(myfilelist)){
+  for (h in 1:length(myfilelist)){
+    if (i==h) next
+    disp_plots_corr_withd(i,h)
+  }
+}
+#make matrix from mycorrs such that rows = top 50 clones data and cols = top 100 clones data
+mycorrs_mx_withd<-matrix(nrow=length(myfilelist),ncol=length(myfilelist))
+for (i in 1:length(myfilelist)){
+  for (h in 1:length(myfilelist)){
+    if (i==h){
+      mycorrs_mx_withd[i,h]<-NA
+  }else{
+      mycorrs_mx_withd[i,h]<-mycorrs_withd[[i]][[h]]}
+  }
+}
+rownames(mycorrs_mx_withd)<-NameList
+colnames(mycorrs_mx_withd)<-NameList
+
+#prepare correlation matrix for heatmap
+melted_corr_withd <- melt(mycorrs_mx_withd)
+
+#plot correlation heatmap
+ggplot(data = melted_corr_withd, aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+   midpoint = 0, limit = c(-1,1), space = "Lab", 
+   name="Pearson\nCorrelation") +
+  theme_minimal()+ 
+ theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+    size = 12, hjust = 1))+
+  ggtitle("Pearson correlations for top 50 clones") + 
+  xlab("") +
+  ylab("")
+
+# Heatmap not very informative, print table as well
+mycorrs_mx_withd %>% 
+  DT::datatable()
+
+
+```
+
+## Check if top 50 of one file are being captured in top 100 of another file
+
+```{r}
+######### print dimensions to evaluate if some clones are being lost with the inner join
+
+#make matrix from mydims such that rows = top 50 clones data and cols = all clones data
+# for top50 with d genes
+mydims_mx_withd<-matrix(nrow=length(myfilelist),ncol=length(myfilelist))
+for (i in 1:length(myfilelist)){
+  for (h in 1:length(myfilelist)){
+    if (i==h){
+      mydims_mx_withd[i,h]<-NA
+  }else{
+      mydims_mx_withd[i,h]<-mydims_withd[[i]][[h]][[1]]}
+  }
+}
+
+rownames(mydims_mx_withd)<-NameList
+colnames(mydims_mx_withd)<-NameList
+
+#print matrix
+print("Total number of clones after merge.  Rows = Top 50 clone file.")
+mydims_mx_withd %>% 
+  DT::datatable()
+```
+
+## Total Clones
+This code block outputs the total clones in each original file.
+
+```{r}
+# make table of original file lengths
+
+total_clones<-matrix(nrow=length(myfilelist),ncol=1)
+for (i in 1:length(myfilelist)){
+  total_clones[i,1]<-dim(myfilelist[[i]])[[1]]
+}
+
+rownames(total_clones)<- NameList
+colnames(total_clones)<-c("Total Clones")
+
+#print matrix
+print("Total clones in each file")
+total_clones %>% 
+  DT::datatable()
+```
+
+# Make a histogram of the productive frequencies of each sample
+```{r}
+
+#create empty data frame
+prod_freq_df<-data.frame()
+
+
+# add productive frequencies to the dataframe
+for (i in 1:length(myfilelist)){
+  #make a dataframe from the ith productive frequency numbers
+  temp_df<-data.frame(productive_frequency=myfilelist[[i]]$productive_frequency)
+  #add info about where data came from
+  temp_df$fileName <- names(myfilelist[i])
+  # merge dataframes to make one large dataframe
+  prod_freq_df<- rbind(prod_freq_df,temp_df)
+}
+
+
+
+ggplot(prod_freq_df, aes(productive_frequency, fill = fileName)) + 
+   geom_histogram(alpha = 0.5, bins=100) +
+   scale_x_log10() +
+   geom_abline(slope = 1, intercept = 0, linetype=2) +
+   theme_classic(base_size = 14) 
+
+ggplot(prod_freq_df, aes(productive_frequency, fill = fileName)) + 
+   geom_histogram(alpha = 0.5, bins=50, position = 'identity') +
+   scale_x_log10() +
+   geom_abline(slope = 1, intercept = 0, linetype=2) +
+   theme_classic(base_size = 14) 
+
+```
+
+## Take a look at correlations for top 100 and top 500 clones as well
+## compare top 100 to top 500; comare top 500 to top 1000
+```{r}
+myfilelist_top500<-lapply(ff,read_tcr_top500)
+names(myfilelist_top500)<-list.files(path=indir, full.names=FALSE)
+
+# new function to create list of top 1000
+#create separate file list with top 500
+read_tcr_top1000<-function(s){
+  tcr_table_1000<-read.table(s,header=T,sep="\t")
+  tcr_table_1000<-tcr_table_1000 %>%
+    select(productive_frequency, cdr3_amino_acid, v_gene, d_gene, j_gene) %>%
+    filter(!is.na(productive_frequency)) %>%
+    slice_max(order_by = productive_frequency, n = 1000, with_ties = TRUE)
+  return(tcr_table_1000)
+}
+
+myfilelist_top1000<-lapply(ff,read_tcr_top1000)
+names(myfilelist_top1000)<-list.files(path=indir, full.names=FALSE)
+
+##############################################
+### top 100 clones  #####
+##############################################
+#make empty lists for plots and correlations
+myplots100_withd<-list()
+mycorrs100_withd<-list()
+mydims100_withd<-list()
+#run loop such that i=top 100 clone tsvs and h=top 500 clone list
+#e.g. myplots[[1]][[2]]= a comparison of the top100 clones of file 1 to
+# top 500 clones in file 2
+for (i in 1:length(myfilelist)){
+  #create plot and correlation list for file i within myplot_list
+  myplots100_withd[[i]]<-list()
+  mycorrs100_withd[[i]]<-list()
+  mydims100_withd[[i]]<-list()
+  
+  for (h in 1:length(myfilelist)){
+    if (i==h) next
+    tcr100_i_h_withd<-merge_tcrs_withd(myfilelist_top100[[i]],myfilelist_top500[[h]])
+    
+    p100_withd<-ggplot(tcr100_i_h_withd, aes(x=productive_frequency.x, y= productive_frequency.y)) +
+      geom_point()+
+      scale_x_log10() +
+      scale_y_log10() +
+      geom_abline(slope = 1, intercept = 0, linetype=2, color = "red") +
+      theme_classic(base_size = 14) +
+      ggtitle("correlation of productive frequency of top 100 clones")
+  
+    correlation100_withd<-cor(tcr100_i_h_withd$productive_frequency.x, tcr100_i_h_withd$productive_frequency.y)
+    dimensions100_withd<-dim(tcr100_i_h_withd)
+    
+    myplots100_withd[[i]][[h]]<-p100_withd
+    mycorrs100_withd[[i]][[h]]<-correlation100_withd
+    mydims100_withd[[i]][[h]]<-dimensions100_withd
+    
+  }
+}
+names(myplots100_withd)<-list.files(path=indir, full.names=FALSE)
+names(mydims100_withd)<-list.files(path=indir, full.names=FALSE)
+# function to display all correlations and plots for top100.
+# will also write to file
+disp_plots_corr100_withd<-function(file1,file2){
+  cat(paste("Top 100 clones of ",NameList[file1],"compared to top 500 clones of ",NameList[file2],"\n"))
+  cat(paste("Pearson Correlation = ",mycorrs100_withd[[file1]][[file2]]))
+  print(myplots100_withd[[file1]][[file2]])
+  #print plots to file
+  png_file<-paste(outdir,"top100_",NameList[file1],"_vs_top500_",NameList[file2],".png",sep="")
+  png(file=png_file,width=600, height=350)
+  print(myplots100_withd[[file1]][[file2]])
+  dev.off()
+}
+for (i in 1:length(myfilelist)){
+  for (h in 1:length(myfilelist)){
+    if (i==h) next
+    disp_plots_corr100_withd(i,h)
+  }
+}
+#make matrix from mycorrs such that rows = top clones data and cols = all clones datas
+mycorrs100_mx_withd<-matrix(nrow=length(myfilelist),ncol=length(myfilelist))
+for (i in 1:length(myfilelist)){
+  for (h in 1:length(myfilelist)){
+    if (i==h){
+      mycorrs100_mx_withd[i,h]<-NA
+  }else{
+      mycorrs100_mx_withd[i,h]<-mycorrs100_withd[[i]][[h]]}
+  }
+}
+rownames(mycorrs100_mx_withd)<-NameList
+colnames(mycorrs100_mx_withd)<-NameList
+#prepare correlation matrix for heatmap
+melted_corr100_withd <- melt(mycorrs100_mx_withd)
+#plot correlation heatmap
+ggplot(data = melted_corr100_withd, aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+   midpoint = 0, limit = c(-1,1), space = "Lab", 
+   name="Pearson\nCorrelation") +
+  theme_minimal()+ 
+ theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+    size = 12, hjust = 1))+
+  ggtitle("Pearson correlations for top 100 clones") + 
+  xlab("") +
+  ylab("")
+# Heatmap not very informative, print table as well
+mycorrs100_mx_withd %>% 
+  DT::datatable()
+
+##############################################
+### Repeat analysis with top 500 clones  #####
+##############################################
+#make empty lists for plots and correlations
+myplots500_withd<-list()
+mycorrs500_withd<-list()
+mydims500_withd<-list()
+#run loop such that i=top 500 clone tsvs and h=full clone list
+#e.g. myplots[[1]][[2]]= a comparison of the top500 clones of file 1 to
+# all clones in file 2
+for (i in 1:length(myfilelist)){
+  #create plot and correlation list for file i within myplot_list
+  myplots500_withd[[i]]<-list()
+  mycorrs500_withd[[i]]<-list()
+  mydims500_withd[[i]]<-list()
+  
+  for (h in 1:length(myfilelist)){
+    if (i==h) next
+    tcr500_i_h_withd<-merge_tcrs_withd(myfilelist_top500[[i]],myfilelist_top1000[[h]])
+    
+    p500_withd<-ggplot(tcr500_i_h_withd, aes(x=productive_frequency.x, y= productive_frequency.y)) +
+      geom_point()+
+      scale_x_log10() +
+      scale_y_log10() +
+      geom_abline(slope = 1, intercept = 0, linetype=2, color = "red") +
+      theme_classic(base_size = 14) +
+      ggtitle("correlation of productive frequency of top 500 clones")
+  
+    correlation500_withd<-cor(tcr500_i_h_withd$productive_frequency.x, tcr500_i_h_withd$productive_frequency.y)
+    dimensions500_withd<-dim(tcr500_i_h_withd)
+    
+    myplots500_withd[[i]][[h]]<-p500_withd
+    mycorrs500_withd[[i]][[h]]<-correlation500_withd
+    mydims500_withd[[i]][[h]]<-dimensions500_withd
+    
+  }
+}
+names(myplots500_withd)<-list.files(path=indir, full.names=FALSE)
+names(mydims500_withd)<-list.files(path=indir, full.names=FALSE)
+# function to display all correlations and plots for top100.
+# will also write to file
+disp_plots_corr500_withd<-function(file1,file2){
+  cat(paste("Top 500 clones of ",NameList[file1],"compared to top 1000 clones of ",NameList[file2],"\n"))
+  cat(paste("Pearson Correlation = ",mycorrs500_withd[[file1]][[file2]]))
+  print(myplots500_withd[[file1]][[file2]])
+  #print plots to file
+  png_file<-paste(outdir,"top500_",NameList[file1],"_vs_top1000_",NameList[file2],".png",sep="")
+  png(file=png_file,width=600, height=350)
+  print(myplots500_withd[[file1]][[file2]])
+  dev.off()
+}
+for (i in 1:length(myfilelist)){
+  for (h in 1:length(myfilelist)){
+    if (i==h) next
+    disp_plots_corr500_withd(i,h)
+  }
+}
+#make matrix from mycorrs such that rows = top clones data and cols = all clones datas
+mycorrs500_mx_withd<-matrix(nrow=length(myfilelist),ncol=length(myfilelist))
+for (i in 1:length(myfilelist)){
+  for (h in 1:length(myfilelist)){
+    if (i==h){
+      mycorrs500_mx_withd[i,h]<-NA
+  }else{
+      mycorrs500_mx_withd[i,h]<-mycorrs500_withd[[i]][[h]]}
+  }
+}
+rownames(mycorrs500_mx_withd)<-NameList
+colnames(mycorrs500_mx_withd)<-NameList
+#prepare correlation matrix for heatmap
+melted_corr500_withd <- melt(mycorrs500_mx_withd)
+#plot correlation heatmap
+ggplot(data = melted_corr500_withd, aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+   midpoint = 0, limit = c(-1,1), space = "Lab", 
+   name="Pearson\nCorrelation") +
+  theme_minimal()+ 
+ theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+    size = 12, hjust = 1))+
+  ggtitle("Pearson correlations for top 500 clones") + 
+  xlab("") +
+  ylab("")
+# Heatmap not very informative, print table as well
+mycorrs500_mx_withd %>% 
+  DT::datatable()
+```
